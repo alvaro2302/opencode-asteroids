@@ -133,6 +133,7 @@ class Ship {
     this.invincible    = 3;
     this.shootCooldown = 0;
     this.boost         = 0;   // segundos de TURBO restantes
+    this.triple        = 0;   // segundos de TRIPLE restantes
     this.dead          = false;
   }
 
@@ -141,6 +142,7 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.boost         > 0) this.boost         -= dt;
+    if (this.triple        > 0) this.triple        -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = 260 * (this.boost > 0 ? 2 : 1);  // TURBO: doble empuje
@@ -167,6 +169,12 @@ class Ship {
     const NOSE = 21;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
+    // TRIPLE: abanico estrecho de 3 balas (±7°)
+    if (this.triple > 0) {
+      const FAN = 0.12;
+      return [this.angle - FAN, this.angle, this.angle + FAN]
+        .map(a => new Bullet(ox, oy, a));
+    }
     return [new Bullet(ox, oy, this.angle)];
   }
 
@@ -237,9 +245,10 @@ class Particle {
   }
 }
 
-// ── Power-up (TURBO) ──────────────────────────────────────────────────────────
+// ── Power-ups (TURBO / TRIPLE) ────────────────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'turbo') {
+    this.type = type;
     this.x = x;
     this.y = y;
     const angle = rand(0, Math.PI * 2);
@@ -262,32 +271,44 @@ class PowerUp {
     // Parpadeo en los últimos 3 segundos
     if (this.ttl < 3 && Math.floor(this.ttl * 6) % 2 === 0) return;
 
+    const triple = this.type === 'triple';
+
     ctx.save();
     ctx.translate(this.x, this.y);
 
     // Aura pulsante
     const pulse = 1 + Math.sin(this.ttl * 5) * 0.15;
-    ctx.strokeStyle = 'rgba(255, 210, 0, 0.55)';
+    ctx.strokeStyle = triple ? 'rgba(0, 255, 136, 0.55)' : 'rgba(255, 210, 0, 0.55)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(0, 0, (this.radius + 4) * pulse, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Rayo: símbolo de velocidad
-    ctx.fillStyle   = 'rgba(255, 210, 0, 0.25)';
-    ctx.strokeStyle = '#ffd200';
-    ctx.lineWidth   = 1.5;
-    ctx.lineJoin    = 'round';
-    ctx.beginPath();
-    ctx.moveTo( 2, -8);
-    ctx.lineTo(-4,  1);
-    ctx.lineTo(-1,  1);
-    ctx.lineTo(-2,  8);
-    ctx.lineTo( 4, -1);
-    ctx.lineTo( 1, -1);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    if (triple) {
+      // Tres puntos: símbolo del triple disparo
+      ctx.fillStyle = '#00ff88';
+      for (const dx of [-6, 0, 6]) {
+        ctx.beginPath();
+        ctx.arc(dx, 0, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Rayo: símbolo de velocidad
+      ctx.fillStyle   = 'rgba(255, 210, 0, 0.25)';
+      ctx.strokeStyle = '#ffd200';
+      ctx.lineWidth   = 1.5;
+      ctx.lineJoin    = 'round';
+      ctx.beginPath();
+      ctx.moveTo( 2, -8);
+      ctx.lineTo(-4,  1);
+      ctx.lineTo(-1,  1);
+      ctx.lineTo(-2,  8);
+      ctx.lineTo( 4, -1);
+      ctx.lineTo( 1, -1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
 
     ctx.restore();
   }
@@ -384,11 +405,12 @@ function update(dt) {
   particles = particles.filter(p => !p.dead);
   powerUps  = powerUps.filter(p => !p.dead);
 
-  // Nave vs power-up (TURBO): 5 segundos de doble empuje
+  // Nave vs power-up: 5 segundos de TURBO o TRIPLE según el tipo
   for (const pu of powerUps) {
     if (!pu.dead && dist(ship, pu) < ship.radius + pu.radius) {
       pu.dead = true;
-      ship.boost = 5;
+      if (pu.type === 'triple') ship.triple = 5;
+      else                      ship.boost  = 5;
       explode(pu.x, pu.y, 8);
     }
   }
@@ -402,8 +424,9 @@ function update(dt) {
         a.dead = true;
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
-        // 10% de probabilidad de soltar un power-up TURBO
-        if (Math.random() < 0.1) powerUps.push(new PowerUp(a.x, a.y));
+        // 10% de probabilidad de soltar un power-up (50% TURBO, 50% TRIPLE)
+        if (Math.random() < 0.1)
+          powerUps.push(new PowerUp(a.x, a.y, Math.random() < 0.5 ? 'turbo' : 'triple'));
         newAsteroids.push(...a.split());
       }
     }
@@ -443,34 +466,33 @@ function drawLifeIcon(x, y) {
   ctx.restore();
 }
 
-function drawBoostBar() {
-  // Panel lateral: cuenta regresiva del TURBO (5 → 1 s)
-  if (ship.boost <= 0) return;
+function drawPowerBar(bx, label, t, rgb) {
+  // Panel lateral: cuenta regresiva del power-up (5 → 1 s)
+  if (t <= 0) return;
 
-  const t    = Math.max(ship.boost, 0);
   const secs = Math.ceil(t);            // 5, 4, 3, 2, 1
   const frac = t / 5;
   const hot  = t <= 1;                  // último segundo: aviso
+  const col  = a => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
+  const main = hot ? '#ffa500' : col(1);
 
-  const bw    = 70;
-  const bh    = 168;
-  const bx    = W - bw - 14;
-  const by    = 54;
-  const cx    = bx + bw / 2;
-  const color = hot ? '#ffa500' : '#0ff';
+  const bw = 70;
+  const bh = 168;
+  const by = 54;
+  const cx = bx + bw / 2;
 
   // Marco del panel
-  ctx.fillStyle   = hot ? 'rgba(255, 165, 0, 0.10)' : 'rgba(0, 255, 255, 0.08)';
-  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.60)' : 'rgba(0, 255, 255, 0.5)';
-  ctx.lineWidth   = 1;
+  ctx.fillStyle   = hot ? 'rgba(255, 165, 0, 0.10)' : col(0.08);
+  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.60)' : col(0.5);
+  ctx.lineWidth = 1;
   ctx.fillRect(bx, by, bw, bh);
   ctx.strokeRect(bx, by, bw, bh);
 
   // Título y segundos restantes
-  ctx.fillStyle = color;
+  ctx.fillStyle = main;
   ctx.font      = 'bold 11px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('VELOCIDAD', cx, by + 20);
+  ctx.fillText(label, cx, by + 20);
 
   ctx.font = 'bold 32px monospace';
   ctx.fillText(String(secs), cx, by + 58);
@@ -480,7 +502,7 @@ function drawBoostBar() {
   const barY = by + 74;
   const barW = 32;
   const barH = bh - 94;
-  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.4)' : 'rgba(0, 255, 255, 0.4)';
+  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.4)' : col(0.4);
   ctx.strokeRect(barX, barY, barW, barH);
   const fillH = (barH - 4) * frac;
   ctx.fillRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH);
@@ -499,7 +521,9 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
-  drawBoostBar();
+  // Paneles de power-ups: TRIPLE a la izquierda de VELOCIDAD
+  drawPowerBar(W - 84,  'VELOCIDAD', ship.boost,  [0, 255, 255]);
+  drawPowerBar(W - 162, 'TRIPLE',    ship.triple, [0, 255, 136]);
 }
 
 function drawOverlay(title, sub) {
