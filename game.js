@@ -118,6 +118,61 @@ class Asteroid {
   }
 }
 
+// ── Asteroide fugaz (estrella fugaz) ──────────────────────────────────────────
+class FleetingAsteroid extends Asteroid {
+  constructor(x, y, dirX, dirY) {
+    super(x, y, 2);
+    const SPEED = 300;   // mucho más rápido que cualquier asteroide normal
+    this.vx = dirX * SPEED;
+    this.vy = dirY * SPEED;
+    this.ttl    = 6;     // se desvanece solo a los 6 s
+    this.points = 200;   // bonificación por destruirlo
+  }
+
+  update(dt) {
+    super.update(dt);
+    this.ttl -= dt;
+    if (this.ttl <= 0) this.dead = true;
+  }
+
+  split() { return []; }   // nunca se parte
+
+  draw() {
+    // Parpadeo justo antes de desvanecerse
+    if (this.ttl < 1.5 && Math.floor(this.ttl * 8) % 2 === 0) return;
+
+    ctx.save();
+    ctx.translate(this.x, this.y);
+
+    // Estela de cometa (detrás de la dirección de movimiento)
+    const vlen = Math.hypot(this.vx, this.vy) || 1;
+    const ux = this.vx / vlen;
+    const uy = this.vy / vlen;
+    for (let i = 1; i <= 3; i++) {
+      const len = this.radius + 14 * i;
+      ctx.strokeStyle = `rgba(125, 220, 255, ${(0.5 / i).toFixed(2)})`;
+      ctx.lineWidth = 4 - i;
+      ctx.beginPath();
+      ctx.moveTo(-ux * (this.radius + 6), -uy * (this.radius + 6));
+      ctx.lineTo(-ux * len, -uy * len);
+      ctx.stroke();
+    }
+
+    // Polígono irregular brillante
+    ctx.rotate(this.rot);
+    ctx.strokeStyle = '#7ddcff';
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin    = 'round';
+    ctx.beginPath();
+    ctx.moveTo(this.verts[0][0], this.verts[0][1]);
+    for (let i = 1; i < this.verts.length; i++)
+      ctx.lineTo(this.verts[i][0], this.verts[i][1]);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 // ── Ship ──────────────────────────────────────────────────────────────────────
 class Ship {
   constructor() { this.reset(); }
@@ -236,10 +291,11 @@ class Particle {
 }
 
 // ── Estado del juego ──────────────────────────────────────────────────────────
-let ship, bullets, asteroids, particles;
+let ship, bullets, asteroids, particles, fleeting;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
+let fugazTimer;   // cuenta atrás para la aparición del asteroide fugaz
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -253,15 +309,31 @@ function spawnAsteroids(count) {
   }
 }
 
+function spawnFugaz() {
+  // Entra por un borde aleatorio, apuntando hacia la zona central
+  const side = randInt(0, 3);
+  let x, y;
+  if (side === 0)      { x = rand(0, W); y = 0; }
+  else if (side === 1) { x = rand(0, W); y = H; }
+  else if (side === 2) { x = 0; y = rand(0, H); }
+  else                 { x = W; y = rand(0, H); }
+  const tx = rand(W * 0.25, W * 0.75);
+  const ty = rand(H * 0.25, H * 0.75);
+  const len = Math.hypot(tx - x, ty - y) || 1;
+  fleeting.push(new FleetingAsteroid(x, y, (tx - x) / len, (ty - y) / len));
+}
+
 function initGame() {
   ship          = new Ship();
   bullets   = [];
   asteroids = [];
   particles = [];
+  fleeting  = [];
   score  = 0;
   lives  = 3;
   level  = 1;
   state  = 'playing';
+  fugazTimer = rand(6, 10);
   spawnAsteroids(4);
 }
 
@@ -269,6 +341,8 @@ function nextLevel() {
   level++;
   bullets   = [];
   particles = [];
+  fleeting  = [];
+  fugazTimer = rand(6, 10);
   ship.reset();
   spawnAsteroids(3 + level);
 }
@@ -303,6 +377,8 @@ function update(dt) {
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
     asteroids.forEach(a => a.update(dt));
+    fleeting.forEach(f => f.update(dt));
+    fleeting = fleeting.filter(f => !f.dead);
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
     return;
   }
@@ -316,6 +392,14 @@ function update(dt) {
   bullets.forEach(b => b.update(dt));
   asteroids.forEach(a => a.update(dt));
   particles.forEach(p => p.update(dt));
+  fleeting.forEach(f => f.update(dt));
+
+  // Aparición periódica del asteroide fugaz
+  fugazTimer -= dt;
+  if (fugazTimer <= 0) {
+    spawnFugaz();
+    fugazTimer = rand(8, 14);
+  }
 
   bullets   = bullets.filter(b => !b.dead);
   particles = particles.filter(p => !p.dead);
@@ -333,8 +417,21 @@ function update(dt) {
       }
     }
   }
+  // Bala vs asteroide fugaz
+  for (const b of bullets) {
+    for (const f of fleeting) {
+      if (!f.dead && !b.dead && dist(b, f) < f.radius) {
+        b.dead = true;
+        f.dead = true;
+        score += f.points;
+        explode(f.x, f.y, 10);
+      }
+    }
+  }
+
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
+  fleeting  = fleeting.filter(f => !f.dead);
 
   // Nave vs asteroide
   if (ship.invincible <= 0) {
@@ -342,6 +439,15 @@ function update(dt) {
       if (dist(ship, a) < ship.radius + a.radius * 0.82) {
         killShip();
         break;
+      }
+    }
+    // Nave vs asteroide fugaz (solo si sigue viva)
+    if (state === 'playing') {
+      for (const f of fleeting) {
+        if (dist(ship, f) < ship.radius + f.radius * 0.82) {
+          killShip();
+          break;
+        }
       }
     }
   }
@@ -399,6 +505,7 @@ function draw() {
 
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
+  fleeting.forEach(f => f.draw());
   bullets.forEach(b => b.draw());
   ship.draw();
 
