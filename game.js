@@ -119,6 +119,8 @@ class Asteroid {
 }
 
 // ── Ship ──────────────────────────────────────────────────────────────────────
+const SHIELD_R = 26;   // radio visual del campo de escudo
+
 class Ship {
   constructor() { this.reset(); }
 
@@ -133,6 +135,7 @@ class Ship {
     this.invincible    = 3;
     this.shootCooldown = 0;
     this.boost         = 0;   // segundos de TURBO restantes
+    this.shield        = 0;   // segundos de ESCUDO restantes
     this.dead          = false;
   }
 
@@ -141,6 +144,7 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.boost         > 0) this.boost         -= dt;
+    if (this.shield        > 0) this.shield        -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = 260 * (this.boost > 0 ? 2 : 1);  // TURBO: doble empuje
@@ -201,6 +205,18 @@ class Ship {
       ctx.stroke();
     }
 
+    // Campo del ESCUDO (parpadea en el último segundo)
+    if (this.shield > 0 && !(this.shield <= 1 && Math.floor(this.shield * 8) % 2 === 0)) {
+      const pulse = 1 + Math.sin(this.shield * 6) * 0.08;
+      ctx.fillStyle   = 'rgba(0, 255, 127, 0.10)';
+      ctx.strokeStyle = 'rgba(0, 255, 127, 0.8)';
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, SHIELD_R * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 }
@@ -237,9 +253,10 @@ class Particle {
   }
 }
 
-// ── Power-up (TURBO) ──────────────────────────────────────────────────────────
+// ── Power-ups (TURBO / ESCUDO) ────────────────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, kind = 'turbo') {
+    this.kind = kind;
     this.x = x;
     this.y = y;
     const angle = rand(0, Math.PI * 2);
@@ -262,29 +279,40 @@ class PowerUp {
     // Parpadeo en los últimos 3 segundos
     if (this.ttl < 3 && Math.floor(this.ttl * 6) % 2 === 0) return;
 
+    const turbo = this.kind === 'turbo';
+
     ctx.save();
     ctx.translate(this.x, this.y);
 
     // Aura pulsante
     const pulse = 1 + Math.sin(this.ttl * 5) * 0.15;
-    ctx.strokeStyle = 'rgba(255, 210, 0, 0.55)';
+    ctx.strokeStyle = turbo ? 'rgba(255, 210, 0, 0.55)' : 'rgba(0, 255, 127, 0.55)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(0, 0, (this.radius + 4) * pulse, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Rayo: símbolo de velocidad
-    ctx.fillStyle   = 'rgba(255, 210, 0, 0.25)';
-    ctx.strokeStyle = '#ffd200';
+    // Símbolo: rayo (velocidad) o cresta (escudo)
+    ctx.fillStyle   = turbo ? 'rgba(255, 210, 0, 0.25)' : 'rgba(0, 255, 127, 0.25)';
+    ctx.strokeStyle = turbo ? '#ffd200' : '#00ff7f';
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
     ctx.beginPath();
-    ctx.moveTo( 2, -8);
-    ctx.lineTo(-4,  1);
-    ctx.lineTo(-1,  1);
-    ctx.lineTo(-2,  8);
-    ctx.lineTo( 4, -1);
-    ctx.lineTo( 1, -1);
+    if (turbo) {
+      ctx.moveTo( 2, -8);
+      ctx.lineTo(-4,  1);
+      ctx.lineTo(-1,  1);
+      ctx.lineTo(-2,  8);
+      ctx.lineTo( 4, -1);
+      ctx.lineTo( 1, -1);
+    } else {
+      ctx.moveTo( 0, -8);
+      ctx.lineTo( 6, -5);
+      ctx.lineTo( 6,  2);
+      ctx.lineTo( 0,  8);
+      ctx.lineTo(-6,  2);
+      ctx.lineTo(-6, -5);
+    }
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -337,6 +365,16 @@ function explode(x, y, count = 8) {
   for (let i = 0; i < count; i++) particles.push(new Particle(x, y));
 }
 
+function destroyAsteroid(a) {
+  a.dead = true;
+  score += POINTS[a.size];
+  explode(a.x, a.y, a.size * 5);
+  // 10% de probabilidad de soltar un power-up (TURBO o ESCUDO)
+  if (Math.random() < 0.1)
+    powerUps.push(new PowerUp(a.x, a.y, Math.random() < 0.5 ? 'turbo' : 'shield'));
+  return a.split();
+}
+
 function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
@@ -384,11 +422,12 @@ function update(dt) {
   particles = particles.filter(p => !p.dead);
   powerUps  = powerUps.filter(p => !p.dead);
 
-  // Nave vs power-up (TURBO): 5 segundos de doble empuje
+  // Nave vs power-up: TURBO (5 s de doble empuje) o ESCUDO (3 s de protección)
   for (const pu of powerUps) {
     if (!pu.dead && dist(ship, pu) < ship.radius + pu.radius) {
       pu.dead = true;
-      ship.boost = 5;
+      if (pu.kind === 'turbo') ship.boost  = 5;
+      else                     ship.shield = 3;
       explode(pu.x, pu.y, 8);
     }
   }
@@ -399,26 +438,24 @@ function update(dt) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
-        a.dead = true;
-        score += POINTS[a.size];
-        explode(a.x, a.y, a.size * 5);
-        // 10% de probabilidad de soltar un power-up TURBO
-        if (Math.random() < 0.1) powerUps.push(new PowerUp(a.x, a.y));
-        newAsteroids.push(...a.split());
+        newAsteroids.push(...destroyAsteroid(a));
       }
     }
   }
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
 
-  // Nave vs asteroide
+  // Nave vs asteroide: con ESCUDO activo se destruye el asteroide
   if (ship.invincible <= 0) {
+    const hitR = ship.shield > 0 ? SHIELD_R : ship.radius;
+    const newAst = [];
     for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
-        break;
+      if (!a.dead && dist(ship, a) < hitR + a.radius * 0.82) {
+        if (ship.shield > 0) newAst.push(...destroyAsteroid(a));
+        else { killShip(); break; }
       }
     }
+    asteroids = asteroids.filter(a => !a.dead).concat(newAst);
   }
 
   // Nivel completado
@@ -443,25 +480,21 @@ function drawLifeIcon(x, y) {
   ctx.restore();
 }
 
-function drawBoostBar() {
-  // Panel lateral: cuenta regresiva del TURBO (5 → 1 s)
-  if (ship.boost <= 0) return;
+function drawTimerPanel(rgb, title, t, max, bx) {
+  // Panel lateral de cuenta regresiva, reutilizado por TURBO y ESCUDO
+  const secs  = Math.ceil(t);
+  const frac  = t / max;
+  const hot   = t <= 1;                  // último segundo: aviso
+  const color = hot ? '#ffa500' : `rgb(${rgb})`;
 
-  const t    = Math.max(ship.boost, 0);
-  const secs = Math.ceil(t);            // 5, 4, 3, 2, 1
-  const frac = t / 5;
-  const hot  = t <= 1;                  // último segundo: aviso
-
-  const bw    = 70;
-  const bh    = 168;
-  const bx    = W - bw - 14;
-  const by    = 54;
-  const cx    = bx + bw / 2;
-  const color = hot ? '#ffa500' : '#0ff';
+  const bw = 70;
+  const bh = 168;
+  const by = 54;
+  const cx = bx + bw / 2;
 
   // Marco del panel
-  ctx.fillStyle   = hot ? 'rgba(255, 165, 0, 0.10)' : 'rgba(0, 255, 255, 0.08)';
-  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.60)' : 'rgba(0, 255, 255, 0.5)';
+  ctx.fillStyle   = hot ? 'rgba(255, 165, 0, 0.10)' : `rgba(${rgb}, 0.08)`;
+  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.60)' : `rgba(${rgb}, 0.5)`;
   ctx.lineWidth   = 1;
   ctx.fillRect(bx, by, bw, bh);
   ctx.strokeRect(bx, by, bw, bh);
@@ -470,7 +503,7 @@ function drawBoostBar() {
   ctx.fillStyle = color;
   ctx.font      = 'bold 11px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('VELOCIDAD', cx, by + 20);
+  ctx.fillText(title, cx, by + 20);
 
   ctx.font = 'bold 32px monospace';
   ctx.fillText(String(secs), cx, by + 58);
@@ -480,10 +513,22 @@ function drawBoostBar() {
   const barY = by + 74;
   const barW = 32;
   const barH = bh - 94;
-  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.4)' : 'rgba(0, 255, 255, 0.4)';
+  ctx.strokeStyle = hot ? 'rgba(255, 165, 0, 0.4)' : `rgba(${rgb}, 0.4)`;
   ctx.strokeRect(barX, barY, barW, barH);
   const fillH = (barH - 4) * frac;
   ctx.fillRect(barX + 2, barY + barH - 2 - fillH, barW - 4, fillH);
+}
+
+function drawBoostBar() {
+  // Panel derecho: cuenta regresiva del TURBO (5 → 1 s)
+  if (ship.boost <= 0) return;
+  drawTimerPanel('0, 255, 255', 'VELOCIDAD', Math.max(ship.boost, 0), 5, W - 70 - 14);
+}
+
+function drawShieldBar() {
+  // Panel izquierdo: cuenta regresiva del ESCUDO (3 → 1 s)
+  if (ship.shield <= 0) return;
+  drawTimerPanel('0, 255, 127', 'ESCUDO', Math.max(ship.shield, 0), 3, 14);
 }
 
 function drawHUD() {
@@ -500,6 +545,7 @@ function drawHUD() {
     drawLifeIcon(W - 16 - i * 22, 18);
 
   drawBoostBar();
+  drawShieldBar();
 }
 
 function drawOverlay(title, sub) {
